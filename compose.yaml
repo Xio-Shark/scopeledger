@@ -1,0 +1,13 @@
+# Production on the self-hosted server. Secrets come from ./.env.production (never committed).
+services:
+  scopeledger:
+    image: scopeledger:${SCOPELEDGER_TAG:-latest}
+    container_name: scopeledger
+    restart: unless-stopped
+    env_file: .env.production
+    ports:
+      - "${SCOPELEDGER_PORT:-8091}:3001"
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
