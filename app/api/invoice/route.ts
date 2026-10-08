@@ -15,7 +15,7 @@ export const maxDuration = 60;
 
 const Target = z.object({
   invoiceNumber: z.string().min(1).max(40),
-  buyerEmail: z.string().email(),
+  buyerEmail: z.string().email().optional(),
   invoicer: z
     .object({
       businessName: z.string().optional(),
@@ -64,8 +64,12 @@ export async function POST(request: Request) {
   if (!recon.success || !target.success) {
     return NextResponse.json({ error: "body must be { reconciliation, target }" }, { status: 400 });
   }
+  const buyerEmail = target.data.buyerEmail ?? process.env.SANDBOX_BUYER_EMAIL;
+  if (!buyerEmail) {
+    return NextResponse.json({ error: "no buyer email: pass target.buyerEmail or set SANDBOX_BUYER_EMAIL" }, { status: 400 });
+  }
   try {
-    const draft = toPaypalInvoice(recon.data, target.data);
+    const draft = toPaypalInvoice(recon.data, { ...target.data, buyerEmail });
     const created = await run("create_invoice", draft);
     return NextResponse.json({ invoiceId: invoiceIdFrom(created), totalCents: recon.data.billableTotalCents });
   } catch (err) {

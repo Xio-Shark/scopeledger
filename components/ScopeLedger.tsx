@@ -40,6 +40,9 @@ export default function ScopeLedger() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [invoice, setInvoice] = useState<{ invoiceId: string; replayed?: boolean } | null>(null);
+  // One id per page load: invoice numbers must be unique on PayPal, and the idempotent send is
+  // scoped to this run so a retry within the run is a no-op while a new session starts clean.
+  const [runId] = useState(() => Date.now().toString(36).toUpperCase());
 
   async function post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(path, {
@@ -73,7 +76,7 @@ export default function ScopeLedger() {
     if (!scope) return;
     const r = await post<{ invoiceId: string }>("/api/invoice", {
       reconciliation: scope.reconciliation,
-      target: { invoiceNumber: "SL-DEMO-001", buyerEmail: "sb-buyer@business.example.com" },
+      target: { invoiceNumber: `SL-${runId}` },
     });
     setInvoice(r);
   });
@@ -82,7 +85,7 @@ export default function ScopeLedger() {
     if (!invoice) return;
     const r = await post<{ invoiceId: string; replayed: boolean }>("/api/invoice?send=1", {
       invoiceId: invoice.invoiceId,
-      scopeId: "demo-001",
+      scopeId: runId,
     });
     setInvoice(r);
   });
