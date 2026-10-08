@@ -4,6 +4,8 @@
 
 Built for the PayPal AI Hackathon. Live demo: https://scopeledger.wangbohan.biz
 
+[Watch the full PayPal sandbox walkthrough](https://youtu.be/PvSxX8wp_pY)
+
 ## The problem
 
 Freelancers taking small jobs get scope changes scattered across chat: "logo approved", "add two more
