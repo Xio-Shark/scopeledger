@@ -20,21 +20,19 @@ type LegacyTool = {
   execute: (...args: never[]) => unknown;
 };
 
-let cached: ToolSet | null = null;
-
-/** The toolkit's tools, converted to the AI SDK v7 shape. Cached per process. */
-export function paypalTools(): ToolSet {
-  if (cached) return cached;
+/** Isolate operation IDs and obtain fresh OAuth credentials; the toolkit caches tokens indefinitely. */
+export function paypalTools(requestId?: string): ToolSet {
+  if (process.env.PAYPAL_ENVIRONMENT !== "sandbox") throw new Error("ScopeLedger requires PAYPAL_ENVIRONMENT=sandbox");
   const toolkit = new PayPalAgentToolkit({
     clientId: requireEnv("PAYPAL_CLIENT_ID"),
     clientSecret: requireEnv("PAYPAL_CLIENT_SECRET"),
     configuration: {
       actions: ALL_TOOLS_ENABLED,
-      context: { sandbox: process.env.PAYPAL_ENVIRONMENT !== "live" },
+      context: { sandbox: true, ...(requestId ? { request_id: requestId } : {}) },
     },
   });
   const raw = toolkit.getTools() as unknown as Record<string, LegacyTool>;
-  cached = Object.fromEntries(
+  const tools = Object.fromEntries(
     Object.entries(raw).map(([name, def]) => [
       name,
       tool({
@@ -44,11 +42,11 @@ export function paypalTools(): ToolSet {
       }),
     ]),
   );
-  return cached;
+  return tools;
 }
 
 /** Names of the tools ScopeLedger relies on, checked at startup so a toolkit change fails loudly. */
-export const REQUIRED_TOOLS = ["create_invoice", "send_invoice", "list_invoices", "get_invoice"] as const;
+export const REQUIRED_TOOLS = ["create_invoice", "send_invoice", "search_invoicing", "get_invoice"] as const;
 
 export function assertRequiredTools(): string[] {
   const names = Object.keys(paypalTools());

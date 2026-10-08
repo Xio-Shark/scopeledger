@@ -1,7 +1,5 @@
-// Idempotency for the two outward-facing actions: creating and sending an invoice.
-//
-// Sending twice must not create a second invoice. The store is process-local (single container);
-// the key is derived from the scope id so a retry after a crash is still a no-op within the run.
+// Coalesce concurrent requests in this process. Restart recovery is provided by PayPal's invoice
+// number, state and request-id in invoice-flow.ts; this cache is not durable storage.
 export type IdempotencyOutcome<T> = { value: T; replayed: boolean };
 
 export class IdempotencyStore<T> {
@@ -35,7 +33,3 @@ export class IdempotencyStore<T> {
     return this.done.has(this.keyOf(scopeId));
   }
 }
-
-export const invoiceSendStore = new IdempotencyStore<{ invoiceId: string; sent: true }>(
-  (scopeId) => `invoice:send:${scopeId}`,
-);

@@ -96,19 +96,25 @@ export interface Assembled {
 }
 
 export function assembleQuote(original: LineItem[], extraction: Extraction): Assembled {
+  if (extraction.items.length === 0) throw new Error("The model returned no reconciliation items");
   const byDesc = new Map(original.map((i) => [i.description.toLowerCase(), i]));
   const unpriced: string[] = [];
   const lines: LineItem[] = extraction.items.map((item, index) => {
     const base = byDesc.get(item.description.toLowerCase());
     const isQuoted = item.status === "quoted";
+    if (isQuoted && !base) throw new Error(`Unknown quoted item: ${item.description}`);
+    if (item.status === "confirmed" && !item.evidence.trim()) throw new Error(`Confirmed item lacks evidence: ${item.description}`);
     if (!isQuoted && item.amountCents == null) unpriced.push(item.description);
     return {
       id: base?.id ?? `x${index + 1}`,
       description: item.description,
-      amountCents: isQuoted && base ? base.amountCents : item.amountCents ?? 0,
+      amountCents: base ? base.amountCents : item.amountCents ?? 0,
       status: item.status,
       evidence: item.evidence,
     };
   });
-  return { quote: { currency: CURRENCY, items: lines.length ? lines : original }, unpriced };
+  const ids = new Set(lines.map((line) => line.id));
+  if (ids.size !== lines.length) throw new Error("The model duplicated a quote item");
+  if (original.some((line) => !ids.has(line.id))) throw new Error("The model omitted an original quote item");
+  return { quote: { currency: CURRENCY, items: lines }, unpriced };
 }

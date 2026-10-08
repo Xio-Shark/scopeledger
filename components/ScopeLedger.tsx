@@ -2,7 +2,10 @@
 
 // The ScopeLedger page: paste a chat, reconcile it against a fixed quote, then turn the confirmed
 // scope into a real PayPal invoice. Every number shown comes back from the server.
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { z } from "zod";
+import { ReconciliationSchema } from "@/lib/scope";
+import type { InvoiceView } from "@/lib/invoice-flow";
 
 const DEMO_QUOTE = [
   { id: "q1", description: "Logo design", amountCents: 80000, status: "quoted" as const, evidence: "" },
@@ -29,6 +32,25 @@ interface ScopeResponse {
   reconciliation: Reconciliation;
   questions: string[];
   unpriced: string[];
+  scopeToken: string;
+}
+
+const SESSION_KEY = "scopeledger:session:v2";
+const SavedSession = z.object({
+  chat: z.string(),
+  scope: z.object({ reconciliation: ReconciliationSchema, questions: z.array(z.string()), unpriced: z.array(z.string()), scopeToken: z.string() }),
+  invoiceId: z.string().regex(/^INV2-[A-Z0-9-]+$/).nullable(),
+});
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  return data as T;
+}
+
+function saveSession(chat: string, scope: ScopeResponse, invoiceId: string | null) {
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ chat, scope, invoiceId }));
 }
 
 const money = (cents: number, currency = "USD") =>
@@ -39,21 +61,36 @@ export default function ScopeLedger() {
   const [scope, setScope] = useState<ScopeResponse | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [invoice, setInvoice] = useState<{ invoiceId: string; replayed?: boolean } | null>(null);
-  // One id per page load: invoice numbers must be unique on PayPal, and the idempotent send is
-  // scoped to this run so a retry within the run is a no-op while a new session starts clean.
-  const [runId] = useState(() => Date.now().toString(36).toUpperCase());
+  const [invoice, setInvoice] = useState<InvoiceView | null>(null);
+  const [reconciledChat, setReconciledChat] = useState<string | null>(null);
+  const [ready, setReady] = useState(false);
 
-  async function post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+  useEffect(() => {
+    let active = true;
+    const frame = requestAnimationFrame(() => {
+      void (async () => {
+        try {
+          const saved = localStorage.getItem(SESSION_KEY);
+          if (saved) {
+            const session = SavedSession.parse(JSON.parse(saved));
+            if (!active) return;
+            setChat(session.chat);
+            setReconciledChat(session.chat);
+            setScope(session.scope);
+            if (session.invoiceId) {
+              const current = await post<InvoiceView>("/api/invoice", { action: "status", scopeToken: session.scope.scopeToken, invoiceId: session.invoiceId });
+              if (active) setInvoice(current);
+            }
+          }
+        } catch (e) {
+          if (active) setError(`Could not restore this session: ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          if (active) setReady(true);
+        }
+      })();
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-    return data as T;
-  }
+    return () => { active = false; cancelAnimationFrame(frame); };
+  }, []);
 
   const run = (label: string, fn: () => Promise<void>) => async () => {
     setBusy(label);
@@ -68,27 +105,36 @@ export default function ScopeLedger() {
   };
 
   const reconcile = run("reconcile", async () => {
+    const result = await post<ScopeResponse>("/api/scope", { quote: { currency: "USD", items: DEMO_QUOTE }, chat });
     setInvoice(null);
-    setScope(await post<ScopeResponse>("/api/scope", { quote: { currency: "USD", items: DEMO_QUOTE }, chat }));
+    setScope(result);
+    setReconciledChat(chat);
+    saveSession(chat, result, null);
   });
 
   const createInvoice = run("create", async () => {
     if (!scope) return;
-    const r = await post<{ invoiceId: string }>("/api/invoice", {
-      reconciliation: scope.reconciliation,
-      target: { invoiceNumber: `SL-${runId}` },
+    const r = await post<InvoiceView>("/api/invoice", {
+      action: "create", scopeToken: scope.scopeToken,
     });
     setInvoice(r);
+    saveSession(chat, scope, r.invoiceId);
   });
 
   const sendInvoice = run("send", async () => {
-    if (!invoice) return;
-    const r = await post<{ invoiceId: string; replayed: boolean }>("/api/invoice?send=1", {
-      invoiceId: invoice.invoiceId,
-      scopeId: runId,
+    if (!invoice || !scope) return;
+    const r = await post<InvoiceView>("/api/invoice", {
+      action: "send", invoiceId: invoice.invoiceId, scopeToken: scope.scopeToken,
     });
     setInvoice(r);
+    saveSession(chat, scope, r.invoiceId);
   });
+
+  const refreshInvoice = run("status", async () => {
+    if (!invoice || !scope) return;
+    setInvoice(await post<InvoiceView>("/api/invoice", { action: "status", invoiceId: invoice.invoiceId, scopeToken: scope.scopeToken }));
+  });
+  const scopeIsCurrent = scope !== null && chat === reconciledChat;
 
   return (
     <main className="mx-auto max-w-5xl px-4 py-12">
@@ -118,6 +164,8 @@ export default function ScopeLedger() {
             className="mt-2 h-32 w-full rounded border border-neutral-300 bg-transparent p-3 text-sm dark:border-neutral-700"
             value={chat}
             onChange={(e) => setChat(e.target.value)}
+            disabled={!ready || busy !== null}
+            aria-label="Client chat"
           />
         </div>
       </section>
@@ -125,12 +173,13 @@ export default function ScopeLedger() {
       <button
         className="mt-6 rounded bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
         onClick={reconcile}
-        disabled={busy !== null}
+        disabled={!ready || busy !== null || !chat.trim()}
       >
         {busy === "reconcile" ? "Reconciling…" : "Reconcile changes"}
       </button>
 
       {error && <p className="mt-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300">{error}</p>}
+      {scope && !scopeIsCurrent && <p className="mt-4 text-sm text-amber-700 dark:text-amber-400">The chat has changed. Reconcile it before creating or sending an invoice.</p>}
 
       {scope && (
         <>
@@ -170,20 +219,27 @@ export default function ScopeLedger() {
               </p>
               <div className="flex gap-2">
                 <button className="rounded border border-neutral-300 px-3 py-1.5 text-sm disabled:opacity-50 dark:border-neutral-700"
-                  onClick={createInvoice} disabled={busy !== null || scope.reconciliation.billableTotalCents === 0}>
+                  onClick={createInvoice} disabled={!ready || busy !== null || !scopeIsCurrent || invoice !== null || scope.reconciliation.billableTotalCents === 0}>
                   {busy === "create" ? "Creating…" : "Create invoice draft"}
                 </button>
                 <button className="rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-                  onClick={sendInvoice} disabled={busy !== null || !invoice}>
+                  onClick={sendInvoice} disabled={!ready || busy !== null || !scopeIsCurrent || !invoice}>
                   {busy === "send" ? "Sending…" : "Send invoice"}
                 </button>
               </div>
             </div>
             {invoice && (
-              <p className="mt-3 text-sm">
-                PayPal invoice <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{invoice.invoiceId}</code>
-                {invoice.replayed && <span className="ml-2 text-neutral-500">already sent — not sent again</span>}
-              </p>
+              <div className="mt-4 space-y-3 text-sm" aria-live="polite">
+                <p>PayPal invoice <code className="rounded bg-neutral-100 px-1 dark:bg-neutral-800">{invoice.invoiceId}</code></p>
+                <p>Status from PayPal: <strong className={invoice.status === "PAID" ? "text-emerald-700 dark:text-emerald-400" : ""}>{invoice.status}</strong></p>
+                <p>Paid: {invoice.paidCents === null ? "not reported" : money(invoice.paidCents)} · Due: {invoice.dueCents === null ? "not reported" : money(invoice.dueCents)}</p>
+                {invoice.replayed && <p className="text-neutral-500">Existing invoice reused — no duplicate action.</p>}
+                <div className="flex flex-wrap items-center gap-3">
+                  {invoice.paymentUrl && invoice.status !== "DRAFT" && <a className="rounded bg-blue-700 px-3 py-2 text-white" href={invoice.paymentUrl} target="_blank" rel="noopener noreferrer">Open PayPal payment page</a>}
+                  <button className="rounded border border-neutral-300 px-3 py-2 disabled:opacity-50 dark:border-neutral-700" onClick={refreshInvoice} disabled={!ready || busy !== null}>{busy === "status" ? "Checking PayPal…" : "Refresh payment status"}</button>
+                </div>
+                <p className="text-xs text-neutral-500">Sandbox demo · USD · payment status is read directly from PayPal. Saved sessions last up to 24 hours on this device.</p>
+              </div>
             )}
           </section>
         </>

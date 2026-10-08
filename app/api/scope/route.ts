@@ -6,6 +6,7 @@ import { generateText, Output } from "ai";
 import { NextResponse } from "next/server";
 import { Extraction, Quote, assembleQuote, reconcile } from "@/lib/scope";
 import { chatModel } from "@/lib/llm";
+import { signScope } from "@/lib/scope-token";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -28,7 +29,7 @@ export async function POST(request: Request) {
   }
   const parsed = Quote.safeParse((body as { quote?: unknown })?.quote);
   const chat = (body as { chat?: unknown })?.chat;
-  if (!parsed.success || typeof chat !== "string" || !chat.trim()) {
+  if (!parsed.success || parsed.data.items.length > 100 || typeof chat !== "string" || !chat.trim() || chat.length > 20_000) {
     return NextResponse.json({ error: "body must be { quote: Quote, chat: string }" }, { status: 400 });
   }
 
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
     const reconciliation = reconcile(quote);
     return NextResponse.json({
       reconciliation,
+      scopeToken: signScope(reconciliation),
       questions: result.output.questions,
       unpriced,
       ms: Date.now() - started,

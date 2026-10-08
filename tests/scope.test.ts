@@ -64,6 +64,16 @@ describe("IdempotencyStore", () => {
 });
 
 describe("assembleQuote", () => {
+  it("preserves a fixed quote's price even when the model calls it confirmed", () => {
+    const original = [{ id: "q1", description: "Logo design", amountCents: 80000, status: "quoted" as const, evidence: "" }];
+    const result = assembleQuote(original, { items: [{ description: "Logo design", amountCents: 1, status: "confirmed", evidence: "approved" }], questions: [] });
+    expect(reconcile(result.quote).billableTotalCents).toBe(80000);
+  });
+  it("rejects empty or incomplete model output instead of substituting a successful quote", () => {
+    const original = [{ id: "q1", description: "Logo design", amountCents: 80000, status: "quoted" as const, evidence: "" }];
+    expect(() => assembleQuote(original, { items: [], questions: [] })).toThrow(/no reconciliation/);
+    expect(() => assembleQuote(original, { items: [{ description: "Poster", amountCents: 100, status: "confirmed", evidence: "approved" }], questions: [] })).toThrow(/omitted/);
+  });
   it("takes quoted amounts from the original quote and flags unpriced changes", () => {
     const original = [{ id: "q1", description: "Logo design", amountCents: 80000, status: "quoted" as const, evidence: "" }];
     const { quote, unpriced } = assembleQuote(original, {
